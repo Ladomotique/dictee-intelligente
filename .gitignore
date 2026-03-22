@@ -2,3 +2,13 @@ __pycache__/
 *.pyc
 config.json
 .DS_Store
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Env
+.venv/
+env/
+venv/
