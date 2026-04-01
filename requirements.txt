@@ -1,3 +1,4 @@
+customtkinter
 sounddevice
 numpy
 keyboard
