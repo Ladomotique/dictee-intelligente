@@ -21,7 +21,12 @@ import struct
 # 8-bit mode
 # Retro
 
-CONFIG_FILE = "config.json"
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 MISTRAL_API_URL = "https://api.mistral.ai/v1/audio/transcriptions"
 
 def load_config():
@@ -30,14 +35,14 @@ def load_config():
             with open(CONFIG_FILE, "r") as f:
                 data = json.load(f)
                 return (data.get("api_key", ""), data.get("sound_profile", "Classique"), 
-                        data.get("hotkey", "alt+w"), data.get("bg_color", "#000000"), data.get("fg_color", "#33FF33"))
+                        data.get("hotkey", "alt+w"), data.get("bg_color", "#000000"), data.get("fg_color", "#33FF33"), data.get("context_bias", ""))
         except:
             pass
-    return "", "Classique", "alt+w", "#000000", "#33FF33"
+    return "", "Classique", "alt+w", "#000000", "#33FF33", ""
 
-def save_config(api_key, sound_profile, hotkey, bg_color, fg_color):
+def save_config(api_key, sound_profile, hotkey, bg_color, fg_color, context_bias):
     with open(CONFIG_FILE, "w") as f:
-        json.dump({"api_key": api_key, "sound_profile": sound_profile, "hotkey": hotkey, "bg_color": bg_color, "fg_color": fg_color}, f)
+        json.dump({"api_key": api_key, "sound_profile": sound_profile, "hotkey": hotkey, "bg_color": bg_color, "fg_color": fg_color, "context_bias": context_bias}, f)
 
 def generate_wav_memory(notes, sample_rate=44100):
     if not notes:
@@ -158,7 +163,7 @@ class App:
         self.root.attributes("-topmost", True)
         
         
-        self.api_key, self.sound_profile, self.hotkey, self.bg_color, self.fg_color = load_config()
+        self.api_key, self.sound_profile, self.hotkey, self.bg_color, self.fg_color, self.context_bias = load_config()
         if self.sound_profile not in SOUND_PROFILES:
             self.sound_profile = "Classique"
             
@@ -174,8 +179,47 @@ class App:
         self.main_container.pack(fill="both", expand=True)
         
         self.mini_container = tk.Frame(self.root, bg=self.bg_color)
-        # mini_container n'est pas "pack" au démarrage
         
+        # Draggable top bar for mini container
+        self.mini_drag_bar = tk.Frame(self.mini_container, bg=self.fg_color, height=15, cursor="fleur")
+        self.mini_drag_bar.pack(fill="x", side="top")
+        
+        # Add tiny "grab" visual in the center of the drag bar
+        tk.Label(self.mini_drag_bar, text="======", bg=self.fg_color, fg=self.bg_color, font=("Courier", 8, "bold"), pady=0).pack()
+
+        # Dragging logic
+        self._offsetx = 0
+        self._offsety = 0
+
+        def click_window(event):
+            self._offsetx = event.x
+            self._offsety = event.y
+
+        def drag_window(event):
+            x = self.root.winfo_pointerx() - self._offsetx
+            y = self.root.winfo_pointery() - self._offsety
+            self.root.geometry(f"+{x}+{y}")
+
+        self.mini_drag_bar.bind("<ButtonPress-1>", click_window)
+        self.mini_drag_bar.bind("<B1-Motion>", drag_window)
+        for child in self.mini_drag_bar.winfo_children():
+            child.bind("<ButtonPress-1>", click_window)
+            child.bind("<B1-Motion>", drag_window)
+
+        self.mini_center_frame = tk.Frame(self.mini_container, bg=self.bg_color)
+        self.mini_center_frame.pack(expand=True)
+        
+        self.mini_btn = tk.Button(self.mini_center_frame, text="🎤", font=("Courier", 18, "bold"), command=self.toggle_recording, bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color, width=5, height=2)
+        # Forcer le texte à être centré horizontalement et verticalement
+        self.mini_btn.pack(pady=(0, 10))
+        
+        self.maximize_btn = tk.Button(self.mini_center_frame, text="▲ MAX", font=("Courier", 14), command=self.maximize_window, bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color, width=7)
+        self.maximize_btn.pack()
+
+        # Thread d'écoute clavier global
+        self.hook_thread = threading.Thread(target=self.monitor_hotkey, daemon=True)
+        self.hook_thread.start()
+
         # --- MAIN UI SETUP ---
         header_frame = tk.Frame(self.main_container, bg=self.bg_color)
         header_frame.pack(fill="x", padx=15, pady=(15, 10))
@@ -204,20 +248,6 @@ class App:
         self.history_frame.pack(fill="both", expand=True, padx=15, pady=5)
         
         self.history = []
-
-        self.mini_center_frame = tk.Frame(self.mini_container, bg=self.bg_color)
-        self.mini_center_frame.pack(expand=True)
-        
-        self.mini_btn = tk.Button(self.mini_center_frame, text="🎤", font=("Courier", 18, "bold"), command=self.toggle_recording, bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color, width=5, height=2)
-        # Forcer le texte à être centré horizontalement et verticalement
-        self.mini_btn.pack(pady=(0, 10))
-        
-        self.maximize_btn = tk.Button(self.mini_center_frame, text="▲ MAX", font=("Courier", 14), command=self.maximize_window, bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color, width=7)
-        self.maximize_btn.pack()
-
-        # Thread d'écoute clavier global
-        self.hook_thread = threading.Thread(target=self.monitor_hotkey, daemon=True)
-        self.hook_thread.start()
 
     def update_history_ui(self):
         for widget in self.history_frame.winfo_children():
@@ -249,20 +279,103 @@ class App:
         dialog = tk.Frame(self.root, bg=self.bg_color, relief="ridge", borderwidth=5, highlightthickness=2, highlightbackground=self.fg_color)
         dialog.place(relx=0.5, rely=0.5, anchor="center", width=420, height=580)
         
+        def save():
+            self.api_key = api_entry.get().strip()
+            self.sound_profile = sound_var.get()
+            self.bg_color = getattr(self, 'tmp_bg', self.bg_color)
+            self.fg_color = getattr(self, 'tmp_fg', self.fg_color)
+            if hasattr(self, 'tmp_hk'): self.hotkey = self.tmp_hk
+            self.context_bias = bias_text.get("1.0", tk.END).strip()
+            save_config(self.api_key, self.sound_profile, self.hotkey, self.bg_color, self.fg_color, self.context_bias)
+            dialog.destroy()
+            if hasattr(self, 'apply_theme'): self.apply_theme()
+            self.reset_ui()
+            
+        def close_dialog():
+            save()
+
         # Close 'X' Button
-        tk.Button(dialog, text="X", command=lambda: save(), bg=self.bg_color, fg=self.fg_color, font=("Courier", 14, "bold"), relief="flat", activebackground=self.fg_color, activeforeground=self.bg_color).place(x=380, y=5, width=30, height=30)
+        tk.Button(dialog, text="X", command=close_dialog, bg=self.bg_color, fg=self.fg_color, font=("Courier", 14, "bold"), relief="flat", activebackground=self.fg_color, activeforeground=self.bg_color).place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne", width=30, height=30)
+
+        # Fixed Save Button at the Bottom
+        save_btn_frame = tk.Frame(dialog, bg=self.bg_color)
+        save_btn_frame.pack(side="bottom", fill="x", pady=10)
+        tk.Button(save_btn_frame, text="SAUVEGARDER", command=save, width=25, font=("Courier", 14, "bold"), bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color).pack(pady=10)
+
+        # scrollable canvas
+        canvas = tk.Canvas(dialog, bg=self.bg_color, highlightthickness=0)
+        scrollable_frame = tk.Frame(canvas, bg=self.bg_color)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def configure_canvas_width(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+            
+        canvas.bind("<Configure>", configure_canvas_width)
+        
+        canvas.pack(side="top", fill="both", expand=True, pady=(40, 5), padx=(5, 5))
+        
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+        def bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            
+        def unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+            
+        dialog.bind("<Enter>", bind_mousewheel)
+        dialog.bind("<Leave>", unbind_mousewheel)
 
         # Titre
-        tk.Label(dialog, text="--- PARAMETRES ---", font=("Courier", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(10, 5))
+        tk.Label(scrollable_frame, text="--- PARAMETRES ---", font=("Courier", 14, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(10, 5))
         
-        tk.Label(dialog, text="Clé API Mistral:", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 5))
-        api_entry = tk.Entry(dialog, width=30, font=("Courier", 11), bg=self.bg_color, fg=self.fg_color, insertbackground=self.fg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color)
+        # 1. Mots personnalisés (Context Bias)
+        tk.Label(scrollable_frame, text="Mots personnalisés (Context Bias):", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(10, 5))
+        tk.Label(scrollable_frame, text="(Séparés par des virgules, max 100)", font=("Courier", 9), bg=self.bg_color, fg=self.fg_color).pack(pady=(0, 5))
+        bias_text = tk.Text(scrollable_frame, height=4, width=35, font=("Courier", 10), bg=self.bg_color, fg=self.fg_color, insertbackground=self.fg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color, wrap="word")
+        bias_text.pack(pady=5, padx=20)
+        if self.context_bias:
+            bias_text.insert("1.0", self.context_bias)
+            
+        # 2. Clé API
+        tk.Label(scrollable_frame, text="Clé API Mistral:", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 5))
+        api_entry = tk.Entry(scrollable_frame, width=30, font=("Courier", 11), bg=self.bg_color, fg=self.fg_color, insertbackground=self.fg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color)
         api_entry.pack(pady=5)
         api_entry.insert(0, self.api_key)
         
-        tk.Label(dialog, text="Profil Sonore:", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(10, 5))
+        # 3. Raccourci Clavier
+        tk.Label(scrollable_frame, text="Raccourci Clavier:", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(15, 5))
+        hk_frame = tk.Frame(scrollable_frame, bg=self.bg_color)
+        hk_frame.pack(pady=5)
         
-        sound_frame = tk.Frame(dialog, bg=self.bg_color)
+        hk_btn = tk.Button(hk_frame, text=self.hotkey, width=15, font=("Courier", 10, "bold"), bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3)
+        hk_btn.pack(side="left", padx=5)
+        
+        self.capturing = False
+        self.tmp_hk = getattr(self, "hotkey", "alt+w")
+        def capture_hk():
+            self.capturing = True
+            hk_btn.configure(text="Appuyez...", fg="#FF3333")
+            def wait_for_key():
+                hk = keyboard.read_hotkey(suppress=False)
+                self.tmp_hk = hk
+                hk_btn.configure(text=self.tmp_hk, fg=self.fg_color)
+                self.capturing = False
+            import threading
+            threading.Thread(target=wait_for_key, daemon=True).start()
+            
+        tk.Button(hk_frame, text="EDITE", width=6, font=("Courier", 10), command=capture_hk, bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3).pack(side="left")
+
+        # 4. Profil Sonore
+        tk.Label(scrollable_frame, text="Profil Sonore:", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(10, 5))
+        
+        sound_frame = tk.Frame(scrollable_frame, bg=self.bg_color)
         sound_frame.pack(pady=5)
         
         sound_var = tk.StringVar(value=self.sound_profile)
@@ -289,8 +402,8 @@ class App:
         
 
         # Colors Setting
-        tk.Label(dialog, text="- COULEURS -", font=("Courier", 11, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(5, 5))
-        col_frame = tk.Frame(dialog, bg=self.bg_color)
+        tk.Label(scrollable_frame, text="- COULEURS -", font=("Courier", 11, "bold"), bg=self.bg_color, fg=self.fg_color).pack(pady=(20, 5))
+        col_frame = tk.Frame(scrollable_frame, bg=self.bg_color)
         col_frame.pack(pady=5)
         
         from tkinter import colorchooser
@@ -320,40 +433,7 @@ class App:
         fg_btn.configure(bg=self.bg_color, fg=self.fg_color)
         fg_btn.pack(side="left", padx=5)
 
-        tk.Label(dialog, text="Raccourci Clavier:", font=("Courier", 11), bg=self.bg_color, fg=self.fg_color).pack(pady=(10, 5))
-        hk_frame = tk.Frame(dialog, bg=self.bg_color)
-        hk_frame.pack(pady=5)
-        
-        hk_btn = tk.Button(hk_frame, text=self.hotkey, width=15, font=("Courier", 10, "bold"), bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3)
-        hk_btn.pack(side="left", padx=5)
-        
-        self.capturing = False
-        self.tmp_hk = getattr(self, "hotkey", "alt+w")
-        def capture_hk():
-            self.capturing = True
-            hk_btn.configure(text="Appuyez...", fg="#FF3333")
-            def wait_for_key():
-                hk = keyboard.read_hotkey(suppress=False)
-                self.tmp_hk = hk
-                hk_btn.configure(text=self.tmp_hk, fg=self.fg_color)
-                self.capturing = False
-            import threading
-            threading.Thread(target=wait_for_key, daemon=True).start()
-            
-        tk.Button(hk_frame, text="EDITE", width=6, font=("Courier", 10), command=capture_hk, bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3).pack(side="left")
 
-        def save():
-            self.api_key = api_entry.get().strip()
-            self.sound_profile = sound_var.get()
-            self.bg_color = getattr(self, 'tmp_bg', self.bg_color)
-            self.fg_color = getattr(self, 'tmp_fg', self.fg_color)
-            if hasattr(self, 'tmp_hk'): self.hotkey = self.tmp_hk
-            save_config(self.api_key, self.sound_profile, self.hotkey, self.bg_color, self.fg_color)
-            dialog.destroy()
-            if hasattr(self, 'apply_theme'): self.apply_theme()
-            self.reset_ui()
-            
-        tk.Button(dialog, text="SAUVEGARDER", command=save, width=25, font=("Courier", 14, "bold"), bg=self.bg_color, fg=self.fg_color, activebackground=self.fg_color, activeforeground=self.bg_color, relief="ridge", borderwidth=3, highlightthickness=2, highlightbackground=self.bg_color, highlightcolor=self.fg_color).pack(pady=(20, 10))
 
     def monitor_hotkey(self):
         hotkey_was_pressed = False
@@ -452,6 +532,21 @@ class App:
             data = {
                 "model": "voxtral-mini-latest" 
             }
+            if self.context_bias:
+                # Nettoyage et formatage du context_bias comme exigé par l'API :
+                # - Pas d'espaces (remplacés par des underscores `_`)
+                # - Séparés par des virgules
+                # - Pas d'éléments vides
+                mots_bruts = self.context_bias.replace('\n', ',').split(',')
+                mots_propres = []
+                for mot in mots_bruts:
+                    mot = mot.strip()
+                    if mot:
+                        mot = mot.replace(' ', '_')
+                        mots_propres.append(mot)
+                
+                if mots_propres:
+                    data["context_bias"] = ",".join(mots_propres)
 
             # Timeout de 15 sec pour éviter un freeze
             response = requests.post(MISTRAL_API_URL, headers=headers, files=files, data=data, timeout=15)
